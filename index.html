@@ -1,0 +1,1219 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, user-scalable=no"
+    />
+    <title>Robot Controller</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <!-- MQTT.js -- CDN OK di sini karena frontend ini di-hosting di Vercel
+     (sudah butuh internet by design), beda konteks dengan versi lama yang
+     di-serve langsung dari ESP32 LittleFS (yang harus self-contained) -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  </head>
+  <body
+    class="bg-auto-bg text-slate-100 min-h-screen font-sans transition-colors duration-300 select-none"
+    id="body-root"
+  >
+    <!-- Placeholder audio start engine -- taruh file engine-start.mp3 Anda di
+     folder public/ project Vercel supaya ter-deploy bareng. -->
+    <audio id="engine-audio" src="/engine-start.mp3" preload="auto"></audio>
+
+    <div class="max-w-md mx-auto px-4 py-5">
+      <!-- Header + connection status -->
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h1 class="text-lg font-bold tracking-tight leading-tight">
+            Robot Controller
+          </h1>
+          <p class="text-xs text-slate-400 leading-tight" id="wifi-rssi">
+            Menghubungkan...
+          </p>
+        </div>
+        <div
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/5 border border-white/10"
+        >
+          <svg viewBox="0 0 24 24" class="w-3.5 h-3.5" id="conn-icon">
+            <circle cx="12" cy="12" r="10" class="fill-red-500" />
+          </svg>
+          <span class="text-xs font-medium" id="conn-text">disconnected</span>
+        </div>
+      </div>
+
+      <!-- Tabs -->
+      <div
+        class="flex gap-1 mb-4 p-1 rounded-xl bg-white/5 border border-white/10"
+      >
+        <button
+          class="tab-btn flex-1 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 bg-white/10"
+          data-tab="control"
+          id="tab-btn-control"
+        >
+          <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current">
+            <path
+              d="M7 6a4 4 0 118 0v2h2a3 3 0 013 3v7a4 4 0 01-4 4H8a4 4 0 01-4-4v-7a3 3 0 013-3h2zm2 2h4V6a2 2 0 10-4 0z"
+            />
+          </svg>
+          Kontrol
+        </button>
+        <button
+          class="tab-btn flex-1 py-2 rounded-lg text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 text-slate-400"
+          data-tab="settings"
+          id="tab-btn-settings"
+        >
+          <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current">
+            <path
+              d="M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3a8.99 8.99 0 00-1.4-3.75l1.06-1.83-2.02-2.02-1.83 1.06A8.99 8.99 0 0013 3.06V1h-2v2.06a8.99 8.99 0 00-3.75 1.4L5.42 3.4 3.4 5.42l1.06 1.83A8.99 8.99 0 003.06 11H1v2h2.06a8.99 8.99 0 001.4 3.75L3.4 18.58l2.02 2.02 1.83-1.06A8.99 8.99 0 0011 20.94V23h2v-2.06a8.99 8.99 0 003.75-1.4l1.83 1.06 2.02-2.02-1.06-1.83A8.99 8.99 0 0020.94 13H23v-2z"
+            />
+          </svg>
+          Pengaturan (list)
+        </button>
+      </div>
+
+      <!-- ============ TAB: CONTROL (ilustrasi interaktif) ============ -->
+      <div id="tab-control" class="tab-panel space-y-4">
+        <!-- Illustration card dengan halo dinamis -->
+        <div
+          class="rounded-3xl border transition-colors duration-500 p-5 relative overflow-hidden"
+          id="illustration-card"
+        >
+          <div
+            class="absolute inset-0 opacity-20 blur-2xl transition-colors duration-500"
+            id="halo-glow"
+          ></div>
+
+          <svg
+            viewBox="0 0 240 300"
+            class="w-full max-w-[220px] mx-auto relative"
+            id="robot-svg"
+          >
+            <!-- Radar gauge arc di depan robot (mewakili jarak sensor) -->
+            <g id="radar-gauge" transform="translate(120, 90)">
+              <path
+                id="radar-arc-bg"
+                d="M -70 0 A 70 70 0 0 1 70 0"
+                fill="none"
+                stroke="#334155"
+                stroke-width="10"
+                stroke-linecap="round"
+              />
+              <path
+                id="radar-arc-fill"
+                d="M -70 0 A 70 70 0 0 1 70 0"
+                fill="none"
+                stroke="#3b82f6"
+                stroke-width="10"
+                stroke-linecap="round"
+                stroke-dasharray="220"
+                stroke-dashoffset="220"
+                style="
+                  transition:
+                    stroke-dashoffset 0.3s ease-out,
+                    stroke 0.3s ease-out;
+                "
+              />
+            </g>
+
+            <!-- Body robot -->
+            <rect
+              x="70"
+              y="90"
+              width="100"
+              height="140"
+              rx="18"
+              class="fill-slate-700 stroke-slate-500"
+              stroke-width="2"
+            />
+
+            <!-- Sensor head (menoleh sesuai servo_angle) -- outer utk posisi,
+             inner (#sensor-head) utk rotasi via JS inline style -->
+            <g transform="translate(120, 95)">
+              <g id="sensor-head">
+                <circle
+                  r="16"
+                  class="fill-slate-800 stroke-slate-500"
+                  stroke-width="2"
+                />
+                <circle cx="-6" cy="-2" r="4" class="fill-cyan-400" />
+                <circle cx="6" cy="-2" r="4" class="fill-cyan-400" />
+              </g>
+            </g>
+
+            <!-- Hotspot: sensor/servo (buka setting jarak_aman + sudut) -->
+            <circle
+              cx="120"
+              cy="95"
+              r="26"
+              class="fill-transparent cursor-pointer hotspot"
+              id="hotspot-sensor"
+            />
+
+            <!-- Roda kiri: rectangle TETAP DIAM (bentuk roda dari atas tidak
+             berputar secara fisik) -- yang animasi cuma tread lines di
+             dalamnya (ilusi permukaan bergulir naik/turun) -->
+            <g transform="translate(55, 160)">
+              <clipPath id="clip-wheel-left">
+                <rect x="-14" y="-35" width="28" height="70" rx="8" />
+              </clipPath>
+              <rect
+                x="-14"
+                y="-35"
+                width="28"
+                height="70"
+                rx="8"
+                class="fill-slate-900 stroke-slate-600"
+                stroke-width="2"
+              />
+              <g id="wheel-left" clip-path="url(#clip-wheel-left)">
+                <line
+                  x1="-14"
+                  y1="-49"
+                  x2="14"
+                  y2="-49"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-35"
+                  x2="14"
+                  y2="-35"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-21"
+                  x2="14"
+                  y2="-21"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-7"
+                  x2="14"
+                  y2="-7"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="7"
+                  x2="14"
+                  y2="7"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="21"
+                  x2="14"
+                  y2="21"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="35"
+                  x2="14"
+                  y2="35"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="49"
+                  x2="14"
+                  y2="49"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+              </g>
+            </g>
+            <circle
+              cx="55"
+              cy="160"
+              r="30"
+              class="fill-transparent cursor-pointer hotspot"
+              id="hotspot-wheel-left"
+            />
+
+            <!-- Roda kanan (struktur sama) -->
+            <g transform="translate(185, 160)">
+              <clipPath id="clip-wheel-right">
+                <rect x="-14" y="-35" width="28" height="70" rx="8" />
+              </clipPath>
+              <rect
+                x="-14"
+                y="-35"
+                width="28"
+                height="70"
+                rx="8"
+                class="fill-slate-900 stroke-slate-600"
+                stroke-width="2"
+              />
+              <g id="wheel-right" clip-path="url(#clip-wheel-right)">
+                <line
+                  x1="-14"
+                  y1="-49"
+                  x2="14"
+                  y2="-49"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-35"
+                  x2="14"
+                  y2="-35"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-21"
+                  x2="14"
+                  y2="-21"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="-7"
+                  x2="14"
+                  y2="-7"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="7"
+                  x2="14"
+                  y2="7"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="21"
+                  x2="14"
+                  y2="21"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="35"
+                  x2="14"
+                  y2="35"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+                <line
+                  x1="-14"
+                  y1="49"
+                  x2="14"
+                  y2="49"
+                  class="stroke-slate-600"
+                  stroke-width="3"
+                />
+              </g>
+            </g>
+            <circle
+              cx="185"
+              cy="160"
+              r="30"
+              class="fill-transparent cursor-pointer hotspot"
+              id="hotspot-wheel-right"
+            />
+
+            <!-- Hotspot: badan/durasi mundur -->
+            <circle
+              cx="120"
+              cy="180"
+              r="34"
+              class="fill-transparent cursor-pointer hotspot"
+              id="hotspot-body"
+            />
+            <svg
+              x="106"
+              y="166"
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              class="fill-slate-400 pointer-events-none"
+            >
+              <path
+                d="M12 4a1 1 0 011 1v11.59l3.3-3.3a1 1 0 111.4 1.42l-5 5a1 1 0 01-1.4 0l-5-5a1 1 0 111.4-1.42l3.3 3.3V5a1 1 0 011-1z"
+              />
+            </svg>
+          </svg>
+
+          <p class="text-center text-xs text-slate-400 mt-2">
+            Tap roda untuk durasi belok · tap sensor untuk jarak &amp; sudut ·
+            tap badan untuk durasi mundur
+          </p>
+        </div>
+
+        <!-- Distance readout ringkas -->
+        <div class="flex items-center justify-center gap-2">
+          <span class="text-3xl font-bold tabular-nums" id="jarak-value"
+            >--</span
+          >
+          <span class="text-sm text-slate-400">cm</span>
+        </div>
+
+        <!-- Start Engine toggle -->
+        <button
+          id="armed-toggle-btn"
+          class="w-full flex items-center justify-between rounded-2xl px-4 py-4 border transition-all duration-200 bg-white/5 border-white/10"
+        >
+          <div class="flex items-center gap-3">
+            <div
+              class="w-12 h-12 rounded-full flex items-center justify-center transition-colors duration-200 bg-slate-700"
+              id="armed-icon-bg"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                class="w-6 h-6 fill-slate-300"
+                id="armed-icon"
+              >
+                <path
+                  d="M13 3a1 1 0 00-2 0v8a1 1 0 002 0zm4.36 2.64a1 1 0 00-1.42 1.42 6 6 0 11-7.9 0 1 1 0 10-1.42-1.42 8 8 0 1010.74 0z"
+                />
+              </svg>
+            </div>
+            <div class="text-left">
+              <p class="text-sm font-bold" id="armed-label">Start Engine</p>
+              <p class="text-xs text-slate-400" id="armed-sublabel">
+                Tap untuk menyalakan
+              </p>
+            </div>
+          </div>
+          <div
+            class="relative w-14 h-7 rounded-full bg-slate-700 transition-colors duration-200 flex items-center px-1"
+            id="armed-track"
+          >
+            <span
+              class="w-5 h-5 rounded-full bg-white shadow transform transition-transform duration-200 translate-x-0"
+              id="armed-knob"
+            ></span>
+          </div>
+        </button>
+
+        <!-- Mode auto/manual -->
+        <div
+          class="flex items-center justify-between rounded-2xl bg-white/5 border border-white/10 px-4 py-3"
+        >
+          <div class="flex items-center gap-2.5">
+            <svg
+              viewBox="0 0 24 24"
+              class="w-5 h-5 fill-current text-slate-300"
+            >
+              <path
+                d="M12 8a4 4 0 100 8 4 4 0 000-8zm8.94 3a8.99 8.99 0 00-1.4-3.75l1.06-1.83-2.02-2.02-1.83 1.06A8.99 8.99 0 0013 3.06V1h-2v2.06a8.99 8.99 0 00-3.75 1.4L5.42 3.4 3.4 5.42l1.06 1.83A8.99 8.99 0 003.06 11H1v2h2.06a8.99 8.99 0 001.4 3.75L3.4 18.58l2.02 2.02 1.83-1.06A8.99 8.99 0 0011 20.94V23h2v-2.06a8.99 8.99 0 003.75-1.4l1.83 1.06 2.02-2.02-1.06-1.83A8.99 8.99 0 0020.94 13H23v-2z"
+              />
+            </svg>
+            <div>
+              <p class="text-xs text-slate-400">Mode Aktif</p>
+              <p class="text-sm font-bold" id="mode-label">AUTO</p>
+            </div>
+          </div>
+          <button
+            id="mode-toggle-btn"
+            class="relative w-14 h-7 rounded-full bg-blue-500/80 transition-colors duration-200 flex items-center px-1"
+          >
+            <span
+              class="w-5 h-5 rounded-full bg-white shadow transform transition-transform duration-200 translate-x-0"
+              id="mode-knob"
+            ></span>
+          </button>
+        </div>
+
+        <!-- D-Pad -->
+        <div
+          class="grid grid-cols-3 grid-rows-3 gap-2 w-56 mx-auto transition-opacity duration-200"
+          id="dpad"
+        >
+          <div></div>
+          <button class="dpad-btn" id="btn-forward">
+            <svg viewBox="0 0 24 24" class="w-7 h-7 mx-auto fill-current">
+              <path d="M12 4l8 8h-5v8h-6v-8H4z" />
+            </svg>
+          </button>
+          <div></div>
+
+          <button class="dpad-btn" id="btn-left">
+            <svg viewBox="0 0 24 24" class="w-7 h-7 mx-auto fill-current">
+              <path d="M4 12l8-8v5h8v6h-8v5z" />
+            </svg>
+          </button>
+          <div class="rounded-xl bg-white/5 flex items-center justify-center">
+            <div class="w-3 h-3 rounded-full bg-slate-600"></div>
+          </div>
+          <button class="dpad-btn" id="btn-right">
+            <svg viewBox="0 0 24 24" class="w-7 h-7 mx-auto fill-current">
+              <path d="M20 12l-8 8v-5H4v-6h8V4z" />
+            </svg>
+          </button>
+
+          <div></div>
+          <button class="dpad-btn" id="btn-backward">
+            <svg viewBox="0 0 24 24" class="w-7 h-7 mx-auto fill-current">
+              <path d="M12 20l-8-8h5V4h6v8h5z" />
+            </svg>
+          </button>
+          <div></div>
+        </div>
+        <p class="text-center text-xs text-slate-500 -mt-2" id="dpad-hint">
+          Nyalakan robot (Start Engine) dan pilih mode Manual untuk kontrol
+          D-pad
+        </p>
+
+        <button
+          id="btn-estop"
+          class="w-full py-4 rounded-2xl bg-red-600 hover:bg-red-500 active:bg-red-700 font-bold text-base tracking-wide shadow-lg shadow-red-900/40 transition-colors flex items-center justify-center gap-2"
+        >
+          <svg viewBox="0 0 24 24" class="w-5 h-5 fill-current">
+            <path d="M6 6h12v12H6z" />
+          </svg>
+          EMERGENCY STOP
+        </button>
+      </div>
+
+      <!-- ============ TAB: SETTINGS (list fallback) ============ -->
+      <div id="tab-settings" class="tab-panel space-y-4 hidden">
+        <p class="text-xs text-slate-400 -mb-2">
+          Fallback list -- fungsinya sama dengan tap ilustrasi di tab Kontrol.
+        </p>
+        <div id="settings-list-container"></div>
+      </div>
+    </div>
+
+    <!-- ============ BOTTOM SHEET (dipakai untuk semua hotspot + tab settings list) ============ -->
+    <div
+      id="sheet-overlay"
+      class="fixed inset-0 bg-black/60 opacity-0 pointer-events-none transition-opacity duration-200 z-40"
+    ></div>
+    <div
+      id="bottom-sheet"
+      class="fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-white/10 rounded-t-3xl p-5 pb-8 translate-y-full transition-transform duration-300 z-50 max-w-md mx-auto"
+    >
+      <div class="w-10 h-1 bg-white/20 rounded-full mx-auto mb-4"></div>
+      <div id="sheet-content"></div>
+    </div>
+
+    <!-- Toast -->
+    <div
+      id="toast"
+      class="fixed bottom-5 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-medium opacity-0 pointer-events-none transition-opacity duration-300 max-w-[90%] text-center z-50"
+    ></div>
+
+    <script>
+      // ============ HAPTIC FEEDBACK (poin 5) ============
+      function haptic(ms = 15) {
+        if (navigator.vibrate) navigator.vibrate(ms);
+      }
+
+      // ============ MQTT (HiveMQ Cloud) ============
+      // TODO: samakan persis dengan MQTT_BROKER/MQTT_USER/MQTT_PASSWORD di firmware .ino
+      const MQTT_BROKER_URL =
+        "033dbce55ef041c29831beacff9caa25.s1.eu.hivemq.cloud"; // GANTI cluster URL Anda, port 8884 = WSS
+      const MQTT_USERNAME = "parid";
+      const MQTT_PASSWORD = "12345678";
+
+      const TOPIC_CONTROL = "robotsaya/control";
+      const TOPIC_TELEMETRY = "robotsaya/telemetry";
+      const TOPIC_CONFIG_ACK = "robotsaya/config_ack";
+      const TOPIC_TEST_STATUS = "robotsaya/test_status";
+      const TOPIC_CONFIG_INIT = "robotsaya/config_init";
+
+      let mqttClientInstance = null;
+
+      function connectMqtt() {
+        const clientId = "web-" + Math.random().toString(16).slice(2, 10);
+        mqttClientInstance = mqtt.connect(MQTT_BROKER_URL, {
+          clientId,
+          username: MQTT_USERNAME,
+          password: MQTT_PASSWORD,
+          clean: true,
+          reconnectPeriod: 3000, // MQTT.js retry level koneksi (beda dari WiFi/robot
+          // yang sengaja no-retry -- di sisi WEB tetap retry
+          // supaya browser bisa nyambung lagi begitu MQTT
+          // broker/internet Anda pulih, tidak perlu reload manual)
+        });
+
+        mqttClientInstance.on("connect", () => {
+          setConn(true);
+          mqttClientInstance.subscribe([
+            TOPIC_TELEMETRY,
+            TOPIC_CONFIG_ACK,
+            TOPIC_CONFIG_INIT,
+            TOPIC_TEST_STATUS,
+          ]);
+          // Minta snapshot config terbaru begitu connect (pengganti WS_EVT_CONNECT
+          // yang dulu otomatis kirim config_init per client baru)
+          sendCmd({ type: "request_init" });
+        });
+
+        mqttClientInstance.on("reconnect", () => setConn(false));
+        mqttClientInstance.on("close", () => {
+          setConn(false);
+          applyArmedUI(false);
+        });
+        mqttClientInstance.on("offline", () => {
+          setConn(false);
+          applyArmedUI(false);
+        });
+
+        mqttClientInstance.on("message", (topic, payload) => {
+          let msg;
+          try {
+            msg = JSON.parse(payload.toString());
+          } catch (e) {
+            return;
+          }
+          if (msg.type === "telemetry") handleTelemetry(msg);
+          if (msg.type === "config_ack") handleConfigAck(msg);
+          if (msg.type === "config_init") handleConfigInit(msg);
+          if (msg.type === "test_status") handleTestStatus(msg);
+        });
+      }
+
+      function setConn(connected) {
+        document.getElementById("conn-icon").innerHTML =
+          `<circle cx="12" cy="12" r="10" class="${connected ? "fill-emerald-500" : "fill-red-500"}"/>`;
+        document.getElementById("conn-text").textContent = connected
+          ? "connected"
+          : "disconnected";
+      }
+
+      function sendCmd(obj) {
+        if (mqttClientInstance && mqttClientInstance.connected) {
+          mqttClientInstance.publish(TOPIC_CONTROL, JSON.stringify(obj));
+        }
+      }
+
+      // ============ TABS ============
+      const tabButtons = document.querySelectorAll(".tab-btn");
+      tabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          haptic();
+          const target = btn.dataset.tab;
+          document
+            .querySelectorAll(".tab-panel")
+            .forEach((p) => p.classList.add("hidden"));
+          document.getElementById("tab-" + target).classList.remove("hidden");
+          tabButtons.forEach((b) => {
+            b.classList.toggle("text-slate-400", b !== btn);
+            b.classList.toggle("bg-white/10", b === btn);
+          });
+        });
+      });
+
+      // ============ ARMED TOGGLE = START ENGINE (poin 1: placeholder audio) ============
+      const armedBtn = document.getElementById("armed-toggle-btn");
+      const armedIconBg = document.getElementById("armed-icon-bg");
+      const armedLabel = document.getElementById("armed-label");
+      const armedSublabel = document.getElementById("armed-sublabel");
+      const armedTrack = document.getElementById("armed-track");
+      const armedKnob = document.getElementById("armed-knob");
+      const dpadHint = document.getElementById("dpad-hint");
+      const engineAudio = document.getElementById("engine-audio");
+      let currentArmed = false;
+
+      armedBtn.addEventListener("click", () => {
+        haptic(25);
+        const next = !currentArmed;
+        if (next) {
+          // Placeholder: mainkan audio start engine. Kalau file /engine-start.mp3
+          // belum diupload user, .play() akan reject promise -- ditangkap diam-diam,
+          // tidak mengganggu fungsi utama (armed tetap jalan meski audio gagal).
+          engineAudio.currentTime = 0;
+          engineAudio.play().catch(() => {});
+        }
+        sendCmd({ type: "armed", value: next });
+        applyArmedUI(next);
+      });
+
+      function applyArmedUI(armed) {
+        currentArmed = armed;
+        armedLabel.textContent = armed ? "Engine ON" : "Start Engine";
+        armedSublabel.textContent = armed
+          ? "Tap untuk mematikan"
+          : "Tap untuk menyalakan";
+        armedIconBg.classList.toggle("bg-emerald-500", armed);
+        armedIconBg.classList.toggle("bg-slate-700", !armed);
+        armedBtn.classList.toggle("border-emerald-500/40", armed);
+        armedBtn.classList.toggle("border-white/10", !armed);
+        armedTrack.classList.toggle("bg-emerald-500", armed);
+        armedTrack.classList.toggle("bg-slate-700", !armed);
+        armedKnob.classList.toggle("translate-x-7", armed);
+        updateDpadAvailability();
+        updateHalo();
+      }
+
+      // ============ MODE TOGGLE ============
+      const modeBtn = document.getElementById("mode-toggle-btn");
+      const modeKnob = document.getElementById("mode-knob");
+      const modeLabel = document.getElementById("mode-label");
+      const dpad = document.getElementById("dpad");
+      let currentMode = "auto";
+
+      modeBtn.addEventListener("click", () => {
+        haptic();
+        const next = currentMode === "auto" ? "manual" : "auto";
+        sendCmd({ type: "mode", value: next });
+        applyModeUI(next);
+      });
+
+      function applyModeUI(mode) {
+        currentMode = mode;
+        modeLabel.textContent = mode.toUpperCase();
+        modeKnob.classList.toggle("translate-x-7", mode === "manual");
+        modeBtn.classList.toggle("bg-emerald-500/80", mode === "manual");
+        modeBtn.classList.toggle("bg-blue-500/80", mode !== "manual");
+        updateDpadAvailability();
+        updateHalo();
+      }
+
+      function updateDpadAvailability() {
+        const usable = currentArmed && currentMode === "manual";
+        dpad.classList.toggle("opacity-30", !usable);
+        dpad.classList.toggle("pointer-events-none", !usable);
+        dpadHint.classList.toggle("hidden", usable);
+      }
+
+      // ============ HALO WARNA DI SEKELILING BODY (poin 2) ============
+      const illustrationCard = document.getElementById("illustration-card");
+      const haloGlow = document.getElementById("halo-glow");
+      let estopFlashTimer = null;
+
+      function updateHalo() {
+        // Prioritas warna: OFF (abu) -> manual (hijau) -> auto (biru)
+        illustrationCard.classList.remove(
+          "border-slate-700",
+          "border-blue-500/40",
+          "border-emerald-500/40",
+          "border-red-500/60",
+        );
+        haloGlow.classList.remove(
+          "bg-slate-600",
+          "bg-blue-500",
+          "bg-emerald-500",
+          "bg-red-500",
+        );
+
+        if (!currentArmed) {
+          illustrationCard.classList.add("border-slate-700");
+          haloGlow.classList.add("bg-slate-600");
+        } else if (currentMode === "manual") {
+          illustrationCard.classList.add("border-emerald-500/40");
+          haloGlow.classList.add("bg-emerald-500");
+        } else {
+          illustrationCard.classList.add("border-blue-500/40");
+          haloGlow.classList.add("bg-blue-500");
+        }
+      }
+
+      function flashHaloRed() {
+        clearTimeout(estopFlashTimer);
+        illustrationCard.classList.remove(
+          "border-slate-700",
+          "border-blue-500/40",
+          "border-emerald-500/40",
+        );
+        haloGlow.classList.remove(
+          "bg-slate-600",
+          "bg-blue-500",
+          "bg-emerald-500",
+        );
+        illustrationCard.classList.add("border-red-500/60");
+        haloGlow.classList.add("bg-red-500");
+        estopFlashTimer = setTimeout(updateHalo, 1200);
+      }
+
+      // ============ ANIMASI RODA BERPUTAR (poin 1, dari field 'motion' telemetry) ============
+      const wheelLeft = document.getElementById("wheel-left");
+      const wheelRight = document.getElementById("wheel-right");
+      let currentMotion = "idle";
+
+      // FIX: saat test belok dipicu dari hotspot roda, animasi harus ikuti roda
+      // yang di-TAP (intuitif UX), bukan roda yang secara fisik benar-benar
+      // berputar (belokKanan() fisiknya menggerakkan roda KIRI, karena kanan jadi
+      // poros diam -- akurat secara fisik tapi membingungkan kalau tap roda kanan
+      // eh yang animasi malah roda kiri). Flag ini membekukan animasi dari
+      // telemetry sementara override test aktif, supaya tidak tabrakan/flicker.
+      let testWheelOverrideActive = false;
+
+      function applyMotionAnimation(motion) {
+        if (testWheelOverrideActive) return; // biarkan override test yang kontrol sementara
+        if (motion === currentMotion) return;
+        currentMotion = motion;
+
+        wheelLeft.classList.remove("wheel-spin-fwd", "wheel-spin-rev");
+        wheelRight.classList.remove("wheel-spin-fwd", "wheel-spin-rev");
+
+        // Animasi ini untuk mode auto/manual ASLI (bukan test) -- tetap akurat
+        // secara fisik. Sesuai fix arah motor: kanan=IN1/IN2, kiri=IN3/IN4.
+        // belokKiri = roda kiri berhenti, roda kanan jalan. belokKanan = sebaliknya.
+        switch (motion) {
+          case "forward":
+            wheelLeft.classList.add("wheel-spin-fwd");
+            wheelRight.classList.add("wheel-spin-fwd");
+            break;
+          case "backward":
+            wheelLeft.classList.add("wheel-spin-rev");
+            wheelRight.classList.add("wheel-spin-rev");
+            break;
+          case "left":
+            wheelRight.classList.add("wheel-spin-fwd"); // roda kanan jalan
+            break;
+          case "right":
+            wheelLeft.classList.add("wheel-spin-fwd"); // roda kiri jalan
+            break;
+          default:
+            break; // idle/scanning -- roda diam
+        }
+      }
+
+      // ============ SENSOR MENOLEH (poin 3, dari field 'servo_angle') ============
+      const sensorHead = document.getElementById("sensor-head");
+      function applyServoAngle(angle) {
+        // servo_angle firmware: 0-180, 90 = tengah, 30 = kanan (default sudutKanan),
+        // 150 = kiri (default sudutKiri) -- konvensi ini sudah divalidasi lewat
+        // testing fisik FSM sebelumnya (print "Kiri"/"Kanan" sesuai posisi nyata).
+        // CSS rotate(+deg) = visual searah jarum jam (noleh ke KANAN layar),
+        // rotate(-deg) = noleh ke KIRI layar. Karena angle makin besar = makin ke
+        // KIRI secara fisik, tandanya harus di-invert (dikali -1) supaya visual
+        // konsisten dengan makna kiri/kanan yang sebenarnya.
+        const rotation = -((angle - 90) / 90) * 45;
+        sensorHead.style.transform = `rotate(${rotation}deg)`;
+      }
+
+      // ============ RADAR GAUGE (poin 4) ============
+      const radarArcFill = document.getElementById("radar-arc-fill");
+      const RADAR_ARC_LENGTH = 220; // sesuai path length arc di SVG
+      const RADAR_MAX_CM = 100; // jarak dianggap "penuh" di gauge, di luar ini tetap full
+
+      function updateRadarGauge(jarak, jarakAman) {
+        const clamped = Math.min(jarak, RADAR_MAX_CM);
+        const ratio = clamped / RADAR_MAX_CM;
+        const offset = RADAR_ARC_LENGTH * (1 - ratio);
+        radarArcFill.setAttribute("stroke-dashoffset", offset);
+
+        // Warna reaktif: merah kalau dekat batas jarak_aman, kuning agak jauh, hijau aman
+        let color = "#22c55e";
+        if (jarak <= jarakAman) color = "#ef4444";
+        else if (jarak <= jarakAman * 2) color = "#eab308";
+        radarArcFill.setAttribute("stroke", color);
+      }
+
+      // ============ D-PAD HOLD-TO-MOVE + HEARTBEAT ============
+      const HEARTBEAT_INTERVAL_MS = 150;
+
+      function bindHold(id, action) {
+        const btn = document.getElementById(id);
+        let heartbeatTimer = null;
+
+        const start = (e) => {
+          e.preventDefault();
+          haptic();
+          btn.classList.add("scale-95", "bg-white/30");
+          sendCmd({ type: "control", action });
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = setInterval(
+            () => sendCmd({ type: "control", action }),
+            HEARTBEAT_INTERVAL_MS,
+          );
+        };
+        const stop = (e) => {
+          e.preventDefault();
+          btn.classList.remove("scale-95", "bg-white/30");
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+          sendCmd({ type: "control", action: "stop" });
+        };
+
+        btn.addEventListener("mousedown", start);
+        btn.addEventListener("touchstart", start, { passive: false });
+        btn.addEventListener("mouseup", stop);
+        btn.addEventListener("touchend", stop);
+        btn.addEventListener("mouseleave", stop);
+        btn.addEventListener("touchcancel", stop);
+      }
+      bindHold("btn-forward", "forward");
+      bindHold("btn-backward", "backward");
+      bindHold("btn-left", "left");
+      bindHold("btn-right", "right");
+
+      // ============ EMERGENCY STOP ============
+      document.getElementById("btn-estop").addEventListener("click", () => {
+        haptic(40);
+        sendCmd({ type: "emergency_stop" });
+        applyModeUI("manual");
+        applyArmedUI(false);
+        flashHaloRed();
+      });
+
+      // ============ TOAST ============
+      let toastTimer = null;
+      function showToast(message, isError) {
+        const el = document.getElementById("toast");
+        el.textContent = message;
+        el.className = `fixed bottom-5 left-1/2 -translate-x-1/2 px-5 py-2.5 rounded-full text-sm font-medium opacity-100 pointer-events-none transition-opacity duration-300 max-w-[90%] text-center z-50 ${isError ? "bg-red-600" : "bg-emerald-600"}`;
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          el.classList.replace("opacity-100", "opacity-0");
+        }, 2800);
+      }
+
+      // ============ SETTINGS CONFIG (dipakai bareng oleh hotspot bottom-sheet & tab list) ============
+      const settingsMeta = {
+        jarak_aman: {
+          label: "Jarak Aman",
+          unit: " cm",
+          min: 5,
+          max: 200,
+          testable: false,
+        },
+        sudut_kiri: {
+          label: "Sudut Servo Kiri",
+          unit: "°",
+          min: 0,
+          max: 180,
+          testable: true,
+          testTarget: "sudut_kiri",
+        },
+        sudut_kanan: {
+          label: "Sudut Servo Kanan",
+          unit: "°",
+          min: 0,
+          max: 180,
+          testable: true,
+          testTarget: "sudut_kanan",
+        },
+        durasi_mundur: {
+          label: "Durasi Mundur",
+          unit: " ms",
+          min: 100,
+          max: 3000,
+          testable: true,
+          testTarget: "durasi_mundur",
+        },
+        durasi_belok: {
+          label: "Durasi Belok",
+          unit: " ms",
+          min: 100,
+          max: 3000,
+          testable: true,
+          testTarget: "durasi_belok",
+        },
+      };
+      const currentValues = {
+        jarak_aman: 20,
+        sudut_kiri: 150,
+        sudut_kanan: 30,
+        durasi_mundur: 600,
+        durasi_belok: 500,
+      };
+
+      // FIX: animasi test belok ikuti roda yang di-TAP (intuitif), bukan roda yang
+      // secara fisik benar-benar berputar. Independen dari telemetry motion --
+      // pure client-side timer selama durasi_belok saat ini.
+      function testHighlightWheel(side) {
+        const el = side === "left" ? wheelLeft : wheelRight;
+        testWheelOverrideActive = true;
+        el.classList.add("wheel-spin-fwd");
+        const duration = currentValues.durasi_belok || 500;
+        setTimeout(() => {
+          el.classList.remove("wheel-spin-fwd");
+          testWheelOverrideActive = false;
+        }, duration);
+      }
+
+      function buildSettingRow(field, opts = {}) {
+        const meta = settingsMeta[field];
+        const testTarget = opts.testTargetOverride || meta.testTarget;
+        const testLabel = opts.testLabel || "Test";
+        const wheelSide = opts.wheelSide || null; // 'left'/'right' -- cuma dipakai untuk durasi_belok
+
+        const wrapper = document.createElement("div");
+        wrapper.className = "setting-card";
+        wrapper.innerHTML = `
+    <div class="flex justify-between items-center mb-2">
+      <label class="text-sm font-medium">${meta.label}</label>
+      <span class="text-sm tabular-nums text-blue-400 font-semibold flex items-center gap-1.5">
+        <span class="saving-spinner hidden" data-role="saving"></span>
+        <span data-role="value">${currentValues[field]}${meta.unit}</span>
+      </span>
+    </div>
+    <input type="range" min="${meta.min}" max="${meta.max}" ${field.startsWith("durasi") ? 'step="50"' : ""} value="${currentValues[field]}" class="w-full" data-role="slider">
+    <p class="field-error hidden" data-role="error"></p>
+    ${
+      meta.testable
+        ? `<button class="w-full mt-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-sm font-medium flex items-center justify-center gap-2 disabled:opacity-40" data-role="test-btn">
+      <svg viewBox="0 0 24 24" class="w-4 h-4 fill-current"><path d="M8 5v14l11-7z"/></svg>
+      ${testLabel}
+    </button>`
+        : ""
+    }
+  `;
+
+        const slider = wrapper.querySelector('[data-role="slider"]');
+        const valueLabel = wrapper.querySelector('[data-role="value"]');
+        const savingSpinner = wrapper.querySelector('[data-role="saving"]');
+        const errorEl = wrapper.querySelector('[data-role="error"]');
+        const testBtn = wrapper.querySelector('[data-role="test-btn"]');
+
+        slider.addEventListener("input", (e) => {
+          valueLabel.textContent = e.target.value + meta.unit;
+        });
+        slider.addEventListener("change", (e) => {
+          haptic();
+          const payload = { type: "config" };
+          payload[field] = parseInt(e.target.value, 10);
+          sendCmd(payload);
+          savingSpinner.classList.remove("hidden");
+          setTimeout(() => savingSpinner.classList.add("hidden"), 3000);
+        });
+
+        if (testBtn) {
+          testBtn.addEventListener("click", () => {
+            if (!currentArmed) {
+              showToast("Nyalakan robot (Start Engine) dulu untuk test", true);
+              return;
+            }
+            haptic(20);
+            testBtn.disabled = true;
+            testBtn.querySelector("svg").outerHTML =
+              '<span class="saving-spinner"></span>';
+            if (wheelSide) testHighlightWheel(wheelSide);
+            sendCmd({ type: "test", target: testTarget });
+          });
+        }
+
+        // Registrasi supaya bisa di-sync dari config_init/config_ack/telemetry
+        settingRegistry[field] = settingRegistry[field] || [];
+        settingRegistry[field].push({
+          slider,
+          valueLabel,
+          savingSpinner,
+          errorEl,
+          testBtn,
+        });
+
+        return wrapper;
+      }
+
+      const settingRegistry = {}; // field -> array of {slider,valueLabel,...} karena bisa muncul di 2 tempat (sheet + list)
+
+      function syncSettingUI(field, value) {
+        currentValues[field] = value;
+        (settingRegistry[field] || []).forEach(({ slider, valueLabel }) => {
+          slider.value = value;
+          valueLabel.textContent = value + settingsMeta[field].unit;
+        });
+      }
+
+      // ============ BOTTOM SHEET ============
+      const sheetOverlay = document.getElementById("sheet-overlay");
+      const bottomSheet = document.getElementById("bottom-sheet");
+      const sheetContent = document.getElementById("sheet-content");
+
+      function openSheet(fields, titleOverrides = {}) {
+        haptic();
+        sheetContent.innerHTML = "";
+        const title = document.createElement("h3");
+        title.className = "text-base font-bold mb-4";
+        title.textContent = titleOverrides.title || "Pengaturan";
+        sheetContent.appendChild(title);
+
+        fields.forEach((f) => {
+          if (typeof f === "string") {
+            sheetContent.appendChild(buildSettingRow(f));
+          } else {
+            sheetContent.appendChild(buildSettingRow(f.field, f));
+          }
+        });
+
+        sheetOverlay.classList.remove("opacity-0", "pointer-events-none");
+        bottomSheet.classList.remove("translate-y-full");
+      }
+
+      function closeSheet() {
+        sheetOverlay.classList.add("opacity-0", "pointer-events-none");
+        bottomSheet.classList.add("translate-y-full");
+      }
+      sheetOverlay.addEventListener("click", closeSheet);
+
+      // ============ HOTSPOTS ============
+      document
+        .getElementById("hotspot-sensor")
+        .addEventListener("click", () => {
+          openSheet(["jarak_aman", "sudut_kiri", "sudut_kanan"], {
+            title: "Sensor & Servo",
+          });
+        });
+      document.getElementById("hotspot-body").addEventListener("click", () => {
+        openSheet(["durasi_mundur"], { title: "Durasi Mundur" });
+      });
+      document
+        .getElementById("hotspot-wheel-left")
+        .addEventListener("click", () => {
+          openSheet(
+            [
+              {
+                field: "durasi_belok",
+                testTargetOverride: "durasi_belok",
+                testLabel: "Test Belok Kiri",
+                wheelSide: "left",
+              },
+            ],
+            { title: "Durasi Belok (Kiri)" },
+          );
+        });
+      document
+        .getElementById("hotspot-wheel-right")
+        .addEventListener("click", () => {
+          openSheet(
+            [
+              {
+                field: "durasi_belok",
+                testTargetOverride: "durasi_belok_kanan",
+                testLabel: "Test Belok Kanan",
+                wheelSide: "right",
+              },
+            ],
+            { title: "Durasi Belok (Kanan)" },
+          );
+        });
+
+      // ============ TAB SETTINGS LIST (fallback, poin 4 sebelumnya) ============
+      const settingsListContainer = document.getElementById(
+        "settings-list-container",
+      );
+      ["jarak_aman", "sudut_kiri", "sudut_kanan", "durasi_mundur"].forEach(
+        (f) => {
+          settingsListContainer.appendChild(buildSettingRow(f));
+        },
+      );
+      settingsListContainer.appendChild(
+        buildSettingRow("durasi_belok", { testLabel: "Test Belok Kiri" }),
+      );
+
+      // ============ CONFIG ACK / INIT / TEST STATUS / TELEMETRY ============
+      function handleConfigAck(msg) {
+        let anyError = false;
+        (msg.results || []).forEach((r) => {
+          (settingRegistry[r.field] || []).forEach(
+            ({ savingSpinner, errorEl }) => {
+              savingSpinner.classList.add("hidden");
+              if (!r.success) {
+                anyError = true;
+                errorEl.textContent = "✗ " + r.reason;
+                errorEl.classList.remove("hidden");
+              } else {
+                errorEl.classList.add("hidden");
+              }
+            },
+          );
+        });
+        showToast(
+          anyError ? "Sebagian setting ditolak" : "Setting tersimpan",
+          anyError,
+        );
+      }
+
+      function handleTestStatus(msg) {
+        // Reset semua tombol test yang match target (bisa muncul di >1 tempat)
+        const fieldsToCheck = [
+          "sudut_kiri",
+          "sudut_kanan",
+          "durasi_mundur",
+          "durasi_belok",
+        ];
+        fieldsToCheck.forEach((field) => {
+          (settingRegistry[field] || []).forEach(({ testBtn }) => {
+            if (!testBtn) return;
+            const spinner = testBtn.querySelector(".saving-spinner");
+            if (spinner) {
+              spinner.outerHTML =
+                '<svg viewBox="0 0 24 24" class="w-4 h-4 fill-current"><path d="M8 5v14l11-7z"/></svg>';
+            }
+            testBtn.disabled = false;
+          });
+        });
+
+        if (msg.status === "running") showToast("Test berjalan...", false);
+        else if (msg.status === "done") showToast("Test selesai", false);
+        else if (msg.status === "rejected")
+          showToast(msg.reason || "Test ditolak", true);
+        else if (msg.status === "cancelled")
+          showToast(msg.reason || "Test dibatalkan", true);
+      }
+
+      function handleConfigInit(msg) {
+        syncSettingUI("sudut_kiri", msg.sudut_kiri);
+        syncSettingUI("sudut_kanan", msg.sudut_kanan);
+        syncSettingUI("durasi_mundur", msg.durasi_mundur);
+        syncSettingUI("durasi_belok", msg.durasi_belok);
+        syncSettingUI("jarak_aman", msg.jarak_aman);
+        applyModeUI(msg.mode);
+        applyArmedUI(!!msg.armed);
+      }
+
+      function rssiLabel(rssi) {
+        if (rssi === 0) return "Menghubungkan...";
+        if (rssi > -60) return `Sinyal baik (${rssi} dBm)`;
+        if (rssi > -75) return `Sinyal sedang (${rssi} dBm)`;
+        return `Sinyal lemah (${rssi} dBm)`;
+      }
+
+      // Smoothing jarak sensor (poin: nilai loncat-loncat) -- HC-SR04 secara fisik
+      // punya noise +-1-3cm antar pembacaan (karakteristik sensor, bukan bug kode).
+      // Exponential moving average meredam noise ini tanpa bikin angka terasa lag
+      // jauh dari nilai asli. alpha=0.35 -- makin kecil makin smooth tapi makin
+      // lambat mengikuti perubahan nyata; 0.35 dipilih sebagai titik tengah.
+      let smoothedJarak = null;
+      const JARAK_SMOOTHING_ALPHA = 0.35;
+
+      function handleTelemetry(msg) {
+        const isOutOfRange = msg.jarak >= 999;
+        if (!isOutOfRange) {
+          smoothedJarak =
+            smoothedJarak === null
+              ? msg.jarak
+              : smoothedJarak * (1 - JARAK_SMOOTHING_ALPHA) +
+                msg.jarak * JARAK_SMOOTHING_ALPHA;
+          document.getElementById("jarak-value").textContent =
+            Math.round(smoothedJarak);
+        } else {
+          smoothedJarak = null;
+          document.getElementById("jarak-value").textContent = "--";
+        }
+
+        document.getElementById("wifi-rssi").textContent = rssiLabel(
+          msg.wifi_rssi,
+        );
+        if (currentMode !== msg.mode) applyModeUI(msg.mode);
+        if (currentArmed !== !!msg.armed) applyArmedUI(!!msg.armed);
+        if (currentValues.jarak_aman !== msg.jarak_aman)
+          syncSettingUI("jarak_aman", msg.jarak_aman);
+
+        applyMotionAnimation(msg.motion || "idle");
+        applyServoAngle(msg.servo_angle ?? 90);
+        updateRadarGauge(
+          isOutOfRange ? 100 : smoothedJarak,
+          currentValues.jarak_aman,
+        );
+      }
+
+      updateHalo();
+      connectMqtt();
+    </script>
+  </body>
+</html>
